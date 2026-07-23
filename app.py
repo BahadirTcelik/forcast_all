@@ -15,9 +15,12 @@ st.set_page_config(page_title="81 İl İklim Verisi Sentezleyici Pro", layout="w
 # ==========================================
 if 'df_kesintisiz' not in st.session_state:
     st.session_state.df_kesintisiz = None
+if 'maxmin_df' not in st.session_state:
+    st.session_state.maxmin_df = None
 
 def veriyi_temizle():
     st.session_state.df_kesintisiz = None
+    st.session_state.maxmin_df = None
 
 # ==========================================
 # 0. DİL VE ÇEVİRİ SÖZLÜĞÜ (i18n)
@@ -161,7 +164,7 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
             df_tmy['Saat'] = df_tmy.index.hour
             df_tmy['Gunluk_Ort'] = df_tmy.index.floor('D').map(gunluk_sicaklik_tmy)
             df_tmy['Saatlik_Fark'] = df_tmy['Temperature'] - df_tmy['Gunluk_Ort']
-            sablon = df_tmy[['Ay', 'Gun', 'Saat', 'Saatlik_Fark']].copy()
+            sablon = df_tmy[['Ay', 'Gun', 'Saat', 'Saatlik_Fark', 'Temperature']].rename(columns={'Temperature': 'TMY_Sicaklik'}).copy()
 
         # --- ADIM 2: GEÇMİŞ VERİYİ (2005-2024) SENTEZLEME (varsa) ---
         df_gecmis_final = None
@@ -190,7 +193,7 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
                 df_sentez_hist['Sentez_Sicaklik'] = df_sentez_hist['Hedef_Gunluk_Ort'] + df_sentez_hist['Saatlik_Fark']
                 df_sentez_hist['Sentez_Sicaklik'] = df_sentez_hist['Sentez_Sicaklik'].interpolate(method='linear').round(3)
 
-                df_gecmis_final = df_sentez_hist[['Sentez_Sicaklik']].reset_index()
+                df_gecmis_final = df_sentez_hist[['Sentez_Sicaklik', 'TMY_Sicaklik']].reset_index()
                 df_gecmis_final.rename(columns={'index': 'Tarih'}, inplace=True)
                 df_gecmis_final['Tarih'] = df_gecmis_final['Tarih'].dt.strftime('%Y-%m-%d %H:00')
 
@@ -222,7 +225,7 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
             df_sentez_fut['Sentez_Sicaklik'] = df_sentez_fut['Hedef_Gunluk_Ort'] + df_sentez_fut['Saatlik_Fark']
             df_sentez_fut['Sentez_Sicaklik'] = df_sentez_fut['Sentez_Sicaklik'].interpolate(method='linear').round(3)
 
-            df_gelecek_final = df_sentez_fut[['Sentez_Sicaklik']].reset_index()
+            df_gelecek_final = df_sentez_fut[['Sentez_Sicaklik', 'TMY_Sicaklik']].reset_index()
             df_gelecek_final.rename(columns={'index': 'Tarih'}, inplace=True)
             df_gelecek_final['Tarih'] = df_gelecek_final['Tarih'].dt.strftime('%Y-%m-%d %H:00')
 
@@ -234,6 +237,33 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
                 df_kesintisiz = df_gelecek_final.copy()
             df_kesintisiz['Tarih_DT'] = pd.to_datetime(df_kesintisiz['Tarih'])
             st.session_state.df_kesintisiz = df_kesintisiz
+
+        # --- ADIM 5: MAKS/MİN SICAKLIK SERİSİ (varsa tarihsel veri) ---
+        if tarihsel_var:
+            with st.spinner("Adım 5: Maksimum/Minimum Sıcaklık Serisi Hazırlanıyor..."):
+                dfx = df_gecmis_all[df_gecmis_all['kod'] == kod][['YIL', 'AY', 'GUN', 'maksimum_sicaklik', 'minimum_sicaklik']].copy()
+                dfx['Tarih'] = pd.to_datetime(dfx[['YIL', 'AY', 'GUN']].rename(columns={'YIL': 'year', 'AY': 'month', 'GUN': 'day'}))
+                dfx = dfx.set_index('Tarih').sort_index()
+
+                # 2022-2024 arasi gun-bazinda (Ay,Gun) ortalama maks/min -> 2024 sonrasi icin kullanilacak
+                son3 = dfx[(dfx['YIL'] >= 2022) & (dfx['YIL'] <= 2024)]
+                ort_gun = son3.groupby(['AY', 'GUN'])[['maksimum_sicaklik', 'minimum_sicaklik']].mean().reset_index()
+                ort_gun.columns = ['AY', 'GUN', 'maks_ort3', 'min_ort3']
+
+                gunler = pd.date_range(df_kesintisiz['Tarih_DT'].min().normalize(), df_kesintisiz['Tarih_DT'].max().normalize(), freq='D')
+                gunluk = pd.DataFrame({'Tarih_DT': gunler})
+                gunluk['AY'] = gunluk['Tarih_DT'].dt.month
+                gunluk['GUN'] = gunluk['Tarih_DT'].dt.day
+
+                dfx_gercek = dfx.reset_index().rename(columns={'Tarih': 'Tarih_DT'})[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
+                gunluk = gunluk.merge(dfx_gercek, on='Tarih_DT', how='left')
+                gunluk = gunluk.merge(ort_gun, on=['AY', 'GUN'], how='left')
+                # Gercek deger varsa (<=2024) onu kullan; yoksa (>2024) 2022-2024 ortalamasini duplicate et
+                gunluk['maksimum_sicaklik'] = gunluk['maksimum_sicaklik'].fillna(gunluk['maks_ort3'])
+                gunluk['minimum_sicaklik'] = gunluk['minimum_sicaklik'].fillna(gunluk['min_ort3'])
+                st.session_state.maxmin_df = gunluk[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
+        else:
+            st.session_state.maxmin_df = None
 
         st.success(f"🎉 İşlem Tamamlandı! {secilen_il} için toplam {len(df_kesintisiz)} saatlik veri başarıyla sentezlendi.")
 
@@ -260,6 +290,17 @@ if st.session_state.df_kesintisiz is not None:
     start_date = col_d1.date_input("Başlangıç Tarihi:", value=default_start, min_value=min_date, max_value=max_date)
     end_date = col_d2.date_input("Bitiş Tarihi:", value=default_end, min_value=min_date, max_value=max_date)
 
+    maxmin_mevcut = st.session_state.maxmin_df is not None
+    col_s1, col_s2 = st.columns(2)
+    tmy_goster = col_s1.checkbox("📐 TMY Referans Çizgisini Göster", value=False)
+    maxmin_goster = col_s2.checkbox(
+        "📈 Maks/Min Sıcaklık Göster (2024 sonrası 2022-2024 ort.)",
+        value=False,
+        disabled=not maxmin_mevcut
+    )
+    if not maxmin_mevcut:
+        col_s2.caption("Bu il için tarihsel maks/min verisi yok.")
+
     mask = (df_k['Tarih_DT'].dt.date >= start_date) & (df_k['Tarih_DT'].dt.date <= end_date)
     filtrelenmis_df = df_k.loc[mask]
 
@@ -273,12 +314,45 @@ if st.session_state.df_kesintisiz is not None:
             name=secilen_il,
             hovertemplate='%{x|%Y-%m-%d %H:%M}<br>%{y:.2f} °C<extra></extra>'
         ))
+
+        if tmy_goster:
+            fig.add_trace(go.Scatter(
+                x=filtrelenmis_df['Tarih_DT'],
+                y=filtrelenmis_df['TMY_Sicaklik'],
+                mode='lines',
+                line=dict(color='#8888FF', width=1.5, dash='dash'),
+                name='TMY Referans',
+                hovertemplate='%{x|%Y-%m-%d %H:%M}<br>TMY: %{y:.2f} °C<extra></extra>'
+            ))
+
+        if maxmin_goster and maxmin_mevcut:
+            mm = st.session_state.maxmin_df
+            mm_mask = (mm['Tarih_DT'].dt.date >= start_date) & (mm['Tarih_DT'].dt.date <= end_date)
+            mm_f = mm.loc[mm_mask]
+            fig.add_trace(go.Scatter(
+                x=mm_f['Tarih_DT'],
+                y=mm_f['maksimum_sicaklik'],
+                mode='lines',
+                line=dict(color='#FFA500', width=1.5, dash='dot'),
+                name='Maksimum (günlük)',
+                hovertemplate='%{x|%Y-%m-%d}<br>Maks: %{y:.2f} °C<extra></extra>'
+            ))
+            fig.add_trace(go.Scatter(
+                x=mm_f['Tarih_DT'],
+                y=mm_f['minimum_sicaklik'],
+                mode='lines',
+                line=dict(color='#1E90FF', width=1.5, dash='dot'),
+                name='Minimum (günlük)',
+                hovertemplate='%{x|%Y-%m-%d}<br>Min: %{y:.2f} °C<extra></extra>'
+            ))
+
         fig.update_layout(
             height=450,
             xaxis_title='Zaman Çizelgesi',
             yaxis_title='Sıcaklık (°C)',
             hovermode='x unified',
             margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
