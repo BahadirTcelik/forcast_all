@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 # ==========================================
 # SAYFA AYARLARI
 # ==========================================
-st.set_page_config(page_title="81 İl Nem Sentezleyici", layout="wide", page_icon="💧")
 
 # ==========================================
 # GÜVENLİK KİLİDİ (Session State Reset)
