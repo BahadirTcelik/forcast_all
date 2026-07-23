@@ -117,6 +117,43 @@ def parcali_csv_oku(prefix, sep=';'):
         return pd.concat([pd.read_csv(p, sep=sep) for p in parcalar], ignore_index=True)
     return pd.read_csv(f"{prefix}.csv", sep=sep)
 
+
+def istno_maxmin_kontrol(df_tarihsel, kod, istno):
+    """İstasyon numarasına (istno) göre maks/min sıcaklık verisinin sağlığını kontrol eder.
+    Sorun varsa (eksik kolon, istno eşleşmiyor, 2022-2024 penceresi boş/eksik) (False, sebep) döner.
+    Sorun yoksa (True, "OK") döner. Bu fonksiyon hem hatayı yakalamak hem de sebebini
+    kullanıcıya net göstermek için kullanılır (ör. Streamlit Cloud'un eski/cache'li veriyle
+    çalışması gibi dağıtım kaynaklı sorunları da teşhis eder)."""
+    gerekli_kolonlar = {'maksimum_sicaklik', 'minimum_sicaklik', 'istno', 'kod', 'YIL', 'AY', 'GUN'}
+    eksik_kolon = gerekli_kolonlar - set(df_tarihsel.columns)
+    if eksik_kolon:
+        return False, (f"Veri dosyasında eksik kolon(lar): {', '.join(sorted(eksik_kolon))}. "
+                        f"Uygulama muhtemelen eski/cache'lenmiş bir veri sürümüyle çalışıyor — "
+                        f"Streamlit Cloud'da 'Manage app' > 'Reboot app' yapın.")
+
+    dfx = df_tarihsel[df_tarihsel['kod'] == kod]
+    if dfx.empty:
+        return False, f"'{kod}' il koduna ait tarihsel veride hiç satır bulunamadı."
+
+    dfx_istno = dfx[dfx['istno'] == istno]
+    if dfx_istno.empty:
+        gercek_istno = sorted(dfx['istno'].unique().tolist())
+        return False, (f"İstasyon no {istno}, '{kod}' koduna ait veri içinde bulunamadı "
+                        f"(bu kod altında gerçekte kayıtlı istno'lar: {gercek_istno}). "
+                        f"il_tablosu.csv <-> tarihsel veri eşleşmesini kontrol edin.")
+
+    son3 = dfx_istno[(dfx_istno['YIL'] >= 2022) & (dfx_istno['YIL'] <= 2024)]
+    if son3.empty:
+        return False, f"İstasyon {istno} ({kod}) için 2022-2024 aralığında hiç kayıt yok."
+
+    mak_dolu = son3['maksimum_sicaklik'].notna().sum()
+    min_dolu = son3['minimum_sicaklik'].notna().sum()
+    if mak_dolu == 0 or min_dolu == 0:
+        return False, (f"İstasyon {istno} ({kod}) için 2022-2024 aralığında maksimum/minimum "
+                        f"sütunları tamamen boş (maks_dolu={mak_dolu}, min_dolu={min_dolu}).")
+
+    return True, "OK"
+
 # ==========================================
 # 2b. ANA EKRAN: BİLGİLENDİRME
 # ==========================================
@@ -241,27 +278,32 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
         # --- ADIM 5: MAKS/MİN SICAKLIK SERİSİ (varsa tarihsel veri) ---
         if tarihsel_var:
             with st.spinner("Adım 5: Maksimum/Minimum Sıcaklık Serisi Hazırlanıyor..."):
-                dfx = df_gecmis_all[df_gecmis_all['kod'] == kod][['YIL', 'AY', 'GUN', 'maksimum_sicaklik', 'minimum_sicaklik']].copy()
-                dfx['Tarih'] = pd.to_datetime(dfx[['YIL', 'AY', 'GUN']].rename(columns={'YIL': 'year', 'AY': 'month', 'GUN': 'day'}))
-                dfx = dfx.set_index('Tarih').sort_index()
+                saglikli, kontrol_mesaji = istno_maxmin_kontrol(df_gecmis_all, kod, istno)
+                if not saglikli:
+                    st.warning(f"⚠️ Maks/Min sıcaklık serisi hesaplanamadı ({secilen_il}, istno={istno}): {kontrol_mesaji}")
+                    st.session_state.maxmin_df = None
+                else:
+                    dfx = df_gecmis_all[(df_gecmis_all['kod'] == kod) & (df_gecmis_all['istno'] == istno)][['YIL', 'AY', 'GUN', 'maksimum_sicaklik', 'minimum_sicaklik']].copy()
+                    dfx['Tarih'] = pd.to_datetime(dfx[['YIL', 'AY', 'GUN']].rename(columns={'YIL': 'year', 'AY': 'month', 'GUN': 'day'}))
+                    dfx = dfx.set_index('Tarih').sort_index()
 
-                # 2022-2024 arasi gun-bazinda (Ay,Gun) ortalama maks/min -> 2024 sonrasi icin kullanilacak
-                son3 = dfx[(dfx['YIL'] >= 2022) & (dfx['YIL'] <= 2024)]
-                ort_gun = son3.groupby(['AY', 'GUN'])[['maksimum_sicaklik', 'minimum_sicaklik']].mean().reset_index()
-                ort_gun.columns = ['AY', 'GUN', 'maks_ort3', 'min_ort3']
+                    # 2022-2024 arasi gun-bazinda (Ay,Gun) ortalama maks/min -> 2024 sonrasi icin kullanilacak
+                    son3 = dfx[(dfx['YIL'] >= 2022) & (dfx['YIL'] <= 2024)]
+                    ort_gun = son3.groupby(['AY', 'GUN'])[['maksimum_sicaklik', 'minimum_sicaklik']].mean().reset_index()
+                    ort_gun.columns = ['AY', 'GUN', 'maks_ort3', 'min_ort3']
 
-                gunler = pd.date_range(df_kesintisiz['Tarih_DT'].min().normalize(), df_kesintisiz['Tarih_DT'].max().normalize(), freq='D')
-                gunluk = pd.DataFrame({'Tarih_DT': gunler})
-                gunluk['AY'] = gunluk['Tarih_DT'].dt.month
-                gunluk['GUN'] = gunluk['Tarih_DT'].dt.day
+                    gunler = pd.date_range(df_kesintisiz['Tarih_DT'].min().normalize(), df_kesintisiz['Tarih_DT'].max().normalize(), freq='D')
+                    gunluk = pd.DataFrame({'Tarih_DT': gunler})
+                    gunluk['AY'] = gunluk['Tarih_DT'].dt.month
+                    gunluk['GUN'] = gunluk['Tarih_DT'].dt.day
 
-                dfx_gercek = dfx.reset_index().rename(columns={'Tarih': 'Tarih_DT'})[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
-                gunluk = gunluk.merge(dfx_gercek, on='Tarih_DT', how='left')
-                gunluk = gunluk.merge(ort_gun, on=['AY', 'GUN'], how='left')
-                # Gercek deger varsa (<=2024) onu kullan; yoksa (>2024) 2022-2024 ortalamasini duplicate et
-                gunluk['maksimum_sicaklik'] = gunluk['maksimum_sicaklik'].fillna(gunluk['maks_ort3'])
-                gunluk['minimum_sicaklik'] = gunluk['minimum_sicaklik'].fillna(gunluk['min_ort3'])
-                st.session_state.maxmin_df = gunluk[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
+                    dfx_gercek = dfx.reset_index().rename(columns={'Tarih': 'Tarih_DT'})[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
+                    gunluk = gunluk.merge(dfx_gercek, on='Tarih_DT', how='left')
+                    gunluk = gunluk.merge(ort_gun, on=['AY', 'GUN'], how='left')
+                    # Gercek deger varsa (<=2024) onu kullan; yoksa (>2024) 2022-2024 ortalamasini duplicate et
+                    gunluk['maksimum_sicaklik'] = gunluk['maksimum_sicaklik'].fillna(gunluk['maks_ort3'])
+                    gunluk['minimum_sicaklik'] = gunluk['minimum_sicaklik'].fillna(gunluk['min_ort3'])
+                    st.session_state.maxmin_df = gunluk[['Tarih_DT', 'maksimum_sicaklik', 'minimum_sicaklik']]
         else:
             st.session_state.maxmin_df = None
 
