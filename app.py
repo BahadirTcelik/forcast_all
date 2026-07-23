@@ -103,7 +103,16 @@ secilen_senaryo = st.sidebar.radio(
 )
 senaryo_sutun = "ort_sck45" if secilen_senaryo == "rcp45" else "ort_sck85"
 
-model_dosya = {"GFDL": "gfdl.csv", "MPI": "mpi.csv", "HG": "hg.csv"}
+model_dosya = {"GFDL": "gfdl", "MPI": "mpi", "HG": "hg"}
+
+@st.cache_data
+def parcali_csv_oku(prefix, sep=';'):
+    """Repoda boyut limiti nedeniyle parçalara bölünmüş (prefix_part1.csv, prefix_part2.csv, ...)
+    CSV dosyalarını okuyup birleştirir. Bölünmemiş 'prefix.csv' varsa onu kullanır."""
+    parcalar = sorted(glob.glob(f"{prefix}_part*.csv"))
+    if parcalar:
+        return pd.concat([pd.read_csv(p, sep=sep) for p in parcalar], ignore_index=True)
+    return pd.read_csv(f"{prefix}.csv", sep=sep)
 
 # ==========================================
 # 2b. ANA EKRAN: BİLGİLENDİRME
@@ -158,7 +167,7 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
         df_gecmis_final = None
         if tarihsel_var:
             with st.spinner("Adım 2: 2005-2024 Ham Verisine Şablon Giydiriliyor..."):
-                df_gecmis_all = pd.read_csv("tarihsel_sicaklik.csv", sep=';')
+                df_gecmis_all = parcali_csv_oku("tarihsel_sicaklik")
                 df_gecmis = df_gecmis_all[df_gecmis_all['kod'] == kod][['YIL', 'AY', 'GUN', 'ortalama_sicaklik']].copy()
                 df_gecmis.columns = ['YIL', 'AY', 'GUN', 'Hedef_Gunluk_Ort']
                 df_gecmis['Tarih'] = pd.to_datetime(df_gecmis[['YIL', 'AY', 'GUN']].rename(columns={'YIL': 'year', 'AY': 'month', 'GUN': 'day'}))
@@ -188,7 +197,7 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
         # --- ADIM 3: GELECEK VERİYİ SENTEZLEME ---
         with st.spinner("Adım 3: Gelecek Verisine Şablon Giydiriliyor..."):
             future_dosya = model_dosya[secilen_model]
-            df_gelecek_all = pd.read_csv(future_dosya, sep=';')
+            df_gelecek_all = parcali_csv_oku(future_dosya)
             df_gelecek = df_gelecek_all[df_gelecek_all['gridno'] == gridno].copy()
 
             df_gelecek.loc[(df_gelecek['AY'] == 2) & (df_gelecek['GUN'] >= 29), 'GUN'] = 28
