@@ -17,10 +17,13 @@ if 'df_kesintisiz' not in st.session_state:
     st.session_state.df_kesintisiz = None
 if 'maxmin_df' not in st.session_state:
     st.session_state.maxmin_df = None
+if 'tarihsel_ref_df' not in st.session_state:
+    st.session_state.tarihsel_ref_df = None
 
 def veriyi_temizle():
     st.session_state.df_kesintisiz = None
     st.session_state.maxmin_df = None
+    st.session_state.tarihsel_ref_df = None
 
 # ==========================================
 # 0. DİL VE ÇEVİRİ SÖZLÜĞÜ (i18n)
@@ -307,6 +310,22 @@ if st.button(t["btn_calc"], type="primary", use_container_width=True):
         else:
             st.session_state.maxmin_df = None
 
+        # --- ADIM 6: TARİHSEL ORTALAMA (2005-2024) REFERANS SERİSİ (varsa tarihsel veri) ---
+        if tarihsel_var:
+            with st.spinner("Adım 6: Tarihsel Ortalama Referans Serisi Hazırlanıyor..."):
+                dfh_ref = df_gecmis_all[(df_gecmis_all['kod'] == kod) & (df_gecmis_all['istno'] == istno)][['AY', 'GUN', 'ortalama_sicaklik']].copy()
+                ort_gun_ref = dfh_ref.groupby(['AY', 'GUN'])['ortalama_sicaklik'].mean().reset_index()
+                ort_gun_ref.columns = ['AY', 'GUN', 'Tarihsel_Ort_Ref']
+
+                gunler_ref = pd.date_range(df_kesintisiz['Tarih_DT'].min().normalize(), df_kesintisiz['Tarih_DT'].max().normalize(), freq='D')
+                gunluk_ref = pd.DataFrame({'Tarih_DT': gunler_ref})
+                gunluk_ref['AY'] = gunluk_ref['Tarih_DT'].dt.month
+                gunluk_ref['GUN'] = gunluk_ref['Tarih_DT'].dt.day
+                gunluk_ref = gunluk_ref.merge(ort_gun_ref, on=['AY', 'GUN'], how='left')
+                st.session_state.tarihsel_ref_df = gunluk_ref[['Tarih_DT', 'Tarihsel_Ort_Ref']]
+        else:
+            st.session_state.tarihsel_ref_df = None
+
         st.success(f"🎉 İşlem Tamamlandı! {secilen_il} için toplam {len(df_kesintisiz)} saatlik veri başarıyla sentezlendi.")
 
     except Exception as e:
@@ -333,7 +352,8 @@ if st.session_state.df_kesintisiz is not None:
     end_date = col_d2.date_input("Bitiş Tarihi:", value=default_end, min_value=min_date, max_value=max_date)
 
     maxmin_mevcut = st.session_state.maxmin_df is not None
-    col_s1, col_s2 = st.columns(2)
+    tarihsel_ref_mevcut = st.session_state.tarihsel_ref_df is not None
+    col_s1, col_s2, col_s3 = st.columns(3)
     tmy_goster = col_s1.checkbox("📐 TMY Referans Çizgisini Göster", value=False)
     maxmin_goster = col_s2.checkbox(
         "📈 Maks/Min Sıcaklık Göster (2024 sonrası 2022-2024 ort.)",
@@ -342,6 +362,13 @@ if st.session_state.df_kesintisiz is not None:
     )
     if not maxmin_mevcut:
         col_s2.caption("Bu il için tarihsel maks/min verisi yok.")
+    tarihsel_ref_goster = col_s3.checkbox(
+        "📅 Tarihsel Ortalama Referans (2005-2024, duplicate)",
+        value=False,
+        disabled=not tarihsel_ref_mevcut
+    )
+    if not tarihsel_ref_mevcut:
+        col_s3.caption("Bu il için tarihsel ortalama verisi yok.")
 
     mask = (df_k['Tarih_DT'].dt.date >= start_date) & (df_k['Tarih_DT'].dt.date <= end_date)
     filtrelenmis_df = df_k.loc[mask]
@@ -386,6 +413,19 @@ if st.session_state.df_kesintisiz is not None:
                 line=dict(color='#1E90FF', width=1.5, dash='dot'),
                 name='Minimum (günlük)',
                 hovertemplate='%{x|%Y-%m-%d}<br>Min: %{y:.2f} °C<extra></extra>'
+            ))
+
+        if tarihsel_ref_goster and tarihsel_ref_mevcut:
+            tr = st.session_state.tarihsel_ref_df
+            tr_mask = (tr['Tarih_DT'].dt.date >= start_date) & (tr['Tarih_DT'].dt.date <= end_date)
+            tr_f = tr.loc[tr_mask]
+            fig.add_trace(go.Scatter(
+                x=tr_f['Tarih_DT'],
+                y=tr_f['Tarihsel_Ort_Ref'],
+                mode='lines',
+                line=dict(color='#2ECC71', width=1.5, dash='dashdot'),
+                name='Tarihsel Ort. Referans (2005-2024)',
+                hovertemplate='%{x|%Y-%m-%d}<br>Tarihsel Ort: %{y:.2f} °C<extra></extra>'
             ))
 
         fig.update_layout(
